@@ -1,0 +1,414 @@
+# GPIO12 - Реле тен
+# GPIO13 - DS18B20
+# GPIO14 - Синий LED
+# GPIO2  - Status led
+# GPIO0 - Кнопка сверху
+# GPIO16 - датчик протечки
+# GPIO14 - сирена
+# A0 - датчик тока
+# GPIO4 - дисплей SSD1306
+# GPIO5 - дисплей SSD1306
+substitutions:
+  name: boiler-1floor
+  friendly_name: Boiler 1Floor
+  friendly_name_short: boiler_1floor
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: false
+  project:
+    name: esphome.Boiler 31
+    version: '1.0'
+
+esp8266:
+  board: nodemcuv2
+  framework:
+    version: recommended
+  restore_from_flash: true
+
+preferences:
+  flash_write_interval: 10min  # set to 10min to prevent wearing out the onboard flash module too quickly
+
+logger:
+  baud_rate: 0
+  logs:
+    component: ERROR
+# Enable Home Assistant API
+api:
+  reboot_timeout: 0s
+
+# Allow Over-The-Air updates
+# New
+ota:
+  platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+# In combination with the `ap` this allows the user
+# to provision wifi credentials to the device via WiFi AP.
+  ap:
+    ssid: "Boiler 1Floor Fallback Hotspot"
+    password: !secret wifi_password
+  manual_ip:
+    static_ip: 192.168.0.42
+    gateway: 192.168.0.1
+    subnet: 255.255.255.0
+web_server:
+  port: 80
+  auth:
+    username: 'admin'
+    password: !secret wifi_password
+
+captive_portal:
+
+font:
+  - file: "fonts/arial.ttf"
+    id: arial_30
+    size: 30
+  - file: "fonts/arial.ttf"
+    id: arial_24
+    size: 24
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x32"
+#    address: 0x3C
+    id: my_display
+#    rotation: 90
+    lambda: |-
+      if (id(temp_boiler_1floor).has_state()) {it.printf(35, 13, id(arial_30), TextAlign::CENTER, "%.1f°", id(temp_boiler_1floor).state); }
+      it.strftime(97, 23, id(arial_24), TextAlign::CENTER, "%H %M", id(sntp_time).now());
+      static int i = 0;
+      i++;
+      if ((i % 2) == 0) 
+      it.print(97, 23, id(arial_24), TextAlign::CENTER, ":");
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+
+light:
+  - platform: status_led
+    name: "Switch state"
+    id: switch_led
+    pin:
+      number: GPIO2
+      inverted: yes 
+  - platform: monochromatic
+    output: blue_output
+    name: "Blue Light"
+    id: blue_light
+output:
+  - platform: esp8266_pwm
+    pin: GPIO15
+    frequency: 1000 Hz
+    id: blue_output
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Moscow
+    servers:
+     - 0.ru.pool.ntp.org
+     - ntp0.ntp-servers.net
+     - 2.pool.ntp.org
+
+text_sensor:
+  - platform: template
+    name: Uptime
+    id: uptime_human
+    icon: mdi:clock-start
+    entity_category: diagnostic
+  - platform: template
+    name: "Current HA Time"
+    id: current_ha_time
+
+    lambda: |-
+      char str[17]; time_t currTime = id(homeassistant_time).now().timestamp;
+      strftime(str, sizeof(str), "%Y-%m-%d %H:%M", localtime(&currTime));
+      return  { str };
+    update_interval: 60s
+  - platform: template
+    name: "Current SNTP Time"
+    id: current_sntp_time
+
+    lambda: |-
+      char str[17]; time_t currTime = id(sntp_time).now().timestamp;
+      strftime(str, sizeof(str), "%Y-%m-%d %H:%M", localtime(&currTime));
+      return  { str };
+    update_interval: 60s
+  - platform: wifi_info
+    ip_address:
+      name: ESP IP Address
+      filters:
+        - lambda: 'return x.substr(7, x.length() - 7);'
+
+sensor:
+  - platform: uptime
+    name: Uptime
+    id: uptime_sensor
+    update_interval: 60s
+    internal: True
+    on_raw_value:
+      then:
+        - text_sensor.template.publish:
+            id: uptime_human
+            # Custom C++ code to generate the result
+            state: !lambda |-
+              int seconds = round(id(uptime_sensor).raw_state);
+              int days = seconds / (24 * 3600);
+              seconds = seconds % (24 * 3600);
+              int hours = seconds / 3600;
+              seconds = seconds % 3600;
+              int minutes = seconds /  60;
+              seconds = seconds % 60;
+              return (
+                (days ? to_string(days) + "d " : "") +
+                (hours ? to_string(hours) + "h " : "") +
+                (minutes ? to_string(minutes) + "m " : "")
+              //  (to_string(seconds) + "s")
+              ).c_str();
+#    internal: false
+  - platform: wifi_signal 
+    name: Wifi Signal
+    id: wifi_signal_db
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    update_interval: 60s
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+
+  - platform: dallas_temp
+    address: 0x091c4dd434646128
+    name: Temperature Boiler 1Floor
+    id: temp_boiler_1floor
+    update_interval: 5s
+    on_value:
+      then:
+        - if:            # Если вкл режим день или ночь или полный нагрев, и температура менее 40, тен включается
+            condition:
+              and:
+                - lambda: 'return (id(temp_boiler_1floor).state < 40 && ((id(sensor_day).state && id(ha_day).state) or (id(sensor_night).state && id(ha_night).state) or id(ha_full_on).state or id(full_on).state));'
+            then:
+              - switch.turn_on: ten
+        - if:            # Если темп. воды выше аварийной, тены отключаются
+            condition:
+              and:
+                - switch.is_on: ten
+                - lambda: 'return (id(temp_boiler_1floor).state > id(water_alarm).state);'
+            then:
+              - switch.turn_off: ten
+  - platform: ct_clamp
+    sensor: adc_sensor
+    name: "Measured Current"
+    id: current
+    sample_duration: 600ms
+    update_interval: 3000ms
+    filters:
+      - calibrate_linear:
+         method: exact
+         datapoints:
+          - 0.003 -> 0
+          - 0.007 -> 0
+          - 0.042 -> 3.70
+          - 0.076 -> 6.95
+  - platform: adc
+    pin: A0
+    id: adc_sensor
+    update_interval: 3000ms
+
+binary_sensor:
+  - platform: status
+    name: ${friendly_name} Status
+  - platform: template
+    name: "Boiler 1Floor Error"   # Ошибка бойлера
+    id: boiler_1floor_error
+    filters:
+      - delayed_on: 10s
+    lambda: 'return id(ten).state && id(temp_boiler_1floor).state <= 40 && id(adc_sensor).state < 3;'
+
+  - platform: template
+    name: "Night"
+    id: sensor_night
+    filters:
+      - delayed_on_off: 5s
+    lambda: |-
+      if (id(sntp_time).now().hour > 0 && id(sntp_time).now().hour <= 8) {
+        return true; // Сенсор включен после полуночи и до 8.00 утра
+      } else {
+        return false;
+      }
+    on_press: 
+      then:
+        - if:            # Если вкл режим день, тен включается днем
+            condition:
+              and:
+                - switch.is_off: ha_full_on
+                - switch.is_on: ha_night
+                - lambda: 'return (id(temp_boiler_1floor).state < id(water_alarm).state && id(temp_boiler_1floor).state < 50);'
+            then:
+              - switch.turn_on: ten
+    on_release: 
+      then:
+        - if:            # Если вкл режим день, тен выключается вечером
+            condition:
+              and:
+                - switch.is_off: ha_full_on
+                - switch.is_on: ha_night
+#                - lambda: 'return (id(temp_boiler_1floor).state < id(water_alarm).state);'
+            then:
+              - switch.turn_off: ten
+  - platform: template
+    name: "Day"
+    id: sensor_day
+    filters:
+      - delayed_on_off: 5s
+    lambda: |-
+      if (id(sntp_time).now().hour >= 12 && id(sntp_time).now().hour <= 19) {
+        return true; // Сенсор включен с 12.00 до 19.00
+      } else {
+        return false;
+      }
+    on_press: 
+      then:
+        - if:            # Если вкл режим день, тен  включается днем
+            condition:
+              and:
+                - switch.is_off: ha_full_on
+                - switch.is_on: ha_day
+                - lambda: 'return (id(temp_boiler_1floor).state < id(water_alarm).state && id(temp_boiler_1floor).state < 50);'
+            then:
+              - switch.turn_on: ten
+    on_release: 
+      then:
+        - if:            # Если вкл режим день, тен  выключается вечером
+            condition:
+              and:
+                - switch.is_off: ha_full_on
+                - switch.is_on: ha_day
+#                - lambda: 'return (id(temp_boiler_1floor).state < id(water_alarm).state);'
+            then:
+              - switch.turn_off: ten
+  - platform: gpio
+    pin:
+      number: GPIO3 # Вход кнопки сверху
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    name: "Manual Button"
+    id: manual_button
+    filters:
+      - delayed_on_off: 100ms
+    on_press: 
+      then:
+        - switch.turn_on: ten
+        - lambda: |-
+            id(my_display).set_contrast(0.9);
+        - delay: 5s
+        - lambda: |-
+            id(my_display).set_contrast(0.1);
+        - delay: 5s
+        - lambda: |-
+            id(my_display).set_contrast(0); 
+    on_release: 
+      then:
+        - switch.turn_off: ten
+  - platform: gpio
+    pin:
+      number: GPIO16 # Датчик протечки
+      inverted: true
+    name: "Moisture"
+    id: moisture
+    on_press: 
+      then:
+        - switch.turn_on: siren
+    on_release: 
+      then:
+        - switch.turn_off: siren
+switch:
+  - platform: gpio
+    name: ${friendly_name} Ten
+    id: ten
+    pin:
+      number: GPIO12
+      inverted: false
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on: 
+      then:
+         - light.turn_on: blue_light
+    on_turn_off: 
+      then:
+         - light.turn_off: blue_light
+  - platform: gpio
+    name: ${friendly_name} Siren
+    id: siren
+    pin:
+      number: GPIO14
+      inverted: false
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    name: "Boiler 1Floor full on"
+    id: full_on
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: homeassistant
+    id: ha_full_on
+    entity_id: input_boolean.boiler_1floor_full_on
+    name: "HA boiler 1Floor full on"
+    restore_mode: RESTORE_DEFAULT_OFF
+    internal: false
+    on_turn_on: 
+      then:
+        - if:            # Если вкл режим полный нагрев , тен включается
+            condition:
+              and:
+                - lambda: 'return (id(temp_boiler_1floor).state < id(water_alarm).state);'
+            then:
+              - switch.turn_on: ten
+  - platform: homeassistant
+    id: ha_day
+    entity_id: input_boolean.boiler_1floor_day
+    name: "HA boiler 1floor day"
+    restore_mode: RESTORE_DEFAULT_OFF
+    internal: false
+  - platform: homeassistant
+    id: ha_night
+    entity_id: input_boolean.boiler_1floor_night
+    name: "HA boiler 1floor night"
+    restore_mode: RESTORE_DEFAULT_OFF
+    internal: false
+one_wire:
+  - platform: gpio
+    pin: GPIO13
+button:
+  # Restart the ESP
+  - platform: restart
+    name: "Restart"
+# Кнопка сброса потребления
+number:
+  - platform: template
+    name: "Water Alarm" # Установка температуры перегрев
+    id: water_alarm
+    optimistic: true
+    unit_of_measurement: "°C"
+    min_value: 40
+    max_value: 80
+    step: 1
+    restore_value: true
+  - platform: template
+    name: "Brightness" # Установка яркости
+    id: brightness
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    step: 5
+    restore_value: true
+    on_value:
+      then:
+        lambda: |-
+          id(my_display).set_contrast(x / 100.0);
