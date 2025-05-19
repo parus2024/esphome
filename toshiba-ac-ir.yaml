@@ -1,0 +1,345 @@
+substitutions:
+  name: "toshiba-ac"
+  friendly_name: Toshiba A/C
+  friendly_name_short: toshiba_ac
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: false
+  project:
+    name: esphome.Toshiba A/C
+    version: '14.04.2025'
+   
+esp8266:
+  board: esp01_1m
+  framework:
+    version: recommended
+  restore_from_flash: true
+
+preferences:
+  flash_write_interval: 10min 
+# Enable logging
+logger:
+  level: WARN
+  baud_rate: 0
+  logs:
+    component: ERROR
+# Enable Home Assistant API
+api:
+  reboot_timeout: 0s
+# Allow Over-The-Air updates
+# New
+ota:
+  platform: esphome
+
+# Allow provisioning Wi-Fi via serial
+#improv_serial:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+# In combination with the `ap` this allows the user
+# to provision wifi credentials to the device via WiFi AP.
+  ap:
+    ssid: "Toshiba AC Fallback Hotspot"
+    password: !secret wifi_password
+  manual_ip:
+    static_ip: 192.168.0.69
+    gateway: 192.168.0.1
+    subnet: 255.255.255.0
+
+# Web server
+web_server:
+  version: 3
+  port: 80
+  auth:
+    username: !secret username
+    password: !secret wifi_password
+  sorting_groups:
+    - id: sorting_group_climate_control
+      name: "Climate Control"
+      sorting_weight: 10
+
+captive_portal:
+
+# Use the blue LED as a status light.
+#   Blink slowly = Temporary issue (WiFi/MQTT disconnected, sensor unavailable, ...)
+#   Blink quickly = Error encountered
+status_led:
+  pin: GPIO4 #checked
+
+# Configure the IR receiver. Handy to pickup confirmation messages
+# from your AC (or capture commands from the actual remote)
+remote_receiver:
+  id: rcvr
+  pin: 
+    number: GPIO5 #checked
+    inverted: True
+  dump: all
+
+# Configure the IR LED: this one sends commands to other devices
+remote_transmitter:
+  pin: GPIO14 #checked
+  carrier_duty_percent: 50%
+
+# это пин к которому подключен датчик. update_interval: задается в секундах. Время через которое будет опрашиваться датчик.
+one_wire:
+  - platform: gpio
+    pin: GPIO12
+
+# Import the state of sensor from Home Assistant into ESPHome. If you don't have a temperature sensor in the room, delete this component.
+sensor:
+  - platform: dallas_temp
+    address: 0xf30760bf0164ff28
+    name: ${friendly_name} temperature
+    id: toshiba_temperature
+    update_interval: 10s
+    icon: "mdi:thermometer"
+
+  - platform: uptime
+    name: Uptime
+    id: uptime_sensor
+    update_interval: 60s
+    internal: True
+    on_raw_value:
+      then:
+        - text_sensor.template.publish:
+            id: uptime_human
+            state: !lambda |-
+              int seconds = round(id(uptime_sensor).raw_state);
+              int days = seconds / (24 * 3600);
+              seconds = seconds % (24 * 3600);
+              int hours = seconds / 3600;
+              seconds = seconds % 3600;
+              int minutes = seconds /  60;
+              seconds = seconds % 60;
+              return (
+                (days ? to_string(days) + "д " : "") +
+                (hours ? to_string(hours) + "ч " : "") +
+                (minutes ? to_string(minutes) + "мин " : "") +
+                (minutes > 0 ? "" : (to_string(seconds) + "с"))
+              ).c_str();
+  - platform: wifi_signal 
+    name: Wifi Signal
+    icon: mdi:wifi
+    id: wifi_signal_db
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    update_interval: 60s
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+# https://esphome.io/components/climate/ir_climate.html?highlight=climate
+climate:
+  - platform: toshiba
+    icon: mdi:air-conditioner
+    id: ${friendly_name_short}
+    name: ${friendly_name}
+    receiver_id: rcvr
+    web_server:
+      sorting_group_id: sorting_group_climate_control
+    # Add a reference to the temperature sensor here
+    sensor: toshiba_temperature # if you don't have a temperature sensor in the room, delete this line.
+    on_state:
+      - lambda: |-
+          auto call = id(climate_mode).make_call();
+          if (x.mode == CLIMATE_MODE_COOL) {
+              call.set_option("COOL");
+              call.perform();
+          }
+          else if (x.mode == CLIMATE_MODE_HEAT) {
+                   call.set_option("HEAT");
+                   call.perform();
+          }
+          else if (x.mode == CLIMATE_MODE_DRY) {
+                   call.set_option("DRY");
+                   call.perform();
+          }
+
+binary_sensor:
+  - platform: status
+    name: ${friendly_name} Status
+    icon: "mdi:check-network-outline"
+
+text_sensor:
+  # Send Uptime in raw seconds
+  - platform: template
+    name: Uptime
+    id: uptime_human
+    icon: mdi:clock-start
+    entity_category: diagnostic
+  - platform: template
+    name: "Current SNTP Time"
+    id: current_sntp_time
+    icon: "mdi:clock"
+    lambda: |-
+      auto now = id(sntp_time).now();
+      // check valid time
+      if (now.is_valid()) {
+        char dateStr[40]; // Увеличил размер массива для строки
+        const char* months[] = {"Янв", "Февр", "Март", "Апр", "Мая", "Июня", "Июля", "Авг", "Сент", "Окт", "Нояб", "Дек"};
+        // Получаем месяц
+        const char* month = months[now.month - 1]; // Месяцы начинаются с 1
+        // Форматируем строку с днем и месяцем, убираем день недели
+        sprintf(dateStr, "%d %s %02d:%02d", now.day_of_month, month, now.hour, now.minute); // Используем массив с русскими названиями
+        return { dateStr }; // Возвращаем строку
+      }
+      return { "Invalid Time" }; // Возвращаем сообщение об ошибке, если время невалидно
+    update_interval: 20s
+  - platform: wifi_info
+    ip_address:
+      name: ESP IP Address
+      icon: mdi:ip-network-outline
+      filters:
+        - lambda: 'return x.substr(7, x.length() - 7);'
+button:
+  - platform: restart
+    icon: mdi:restart
+    name: "ESP Reboot"
+  - platform: safe_mode
+    name: "ESP Restart (Safe Mode)"
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Moscow
+    servers:
+     - 0.ru.pool.ntp.org
+     - ntp0.ntp-servers.net
+     - 2.pool.ntp.org
+datetime:
+  - platform: template
+    id: night_on
+#    time_id: my_time
+    type: time
+    web_server:
+      sorting_group_id: sorting_group_climate_control
+    name: "Night ON"
+    icon: "mdi:clock-check"
+    optimistic: true
+    initial_value: "00:00:00"
+    restore_value: true
+    on_time:
+      then:
+        - if:
+            condition:
+              - switch.is_on: night
+            then:
+              - lambda: |-
+                  auto call = id(${friendly_name_short}).make_call();
+                  if (id(climate_mode).state == "COOL") {
+                      call.set_mode("COOL");
+                      call.perform();
+                  }
+                  else if (id(climate_mode).state == "HEAT") {
+                      call.set_mode("HEAT");
+                      call.perform();
+                  }
+                  else if (id(climate_mode).state == "DRY") {
+                      call.set_mode("DRY");
+                      call.perform();
+                  }
+  - platform: template
+    id: night_off
+    type: time
+    web_server:
+      sorting_group_id: sorting_group_climate_control
+    name: "Night OFF"
+    icon: "mdi:clock-check-outline"
+    optimistic: true
+    initial_value: "07:00:00"
+    restore_value: true
+    on_time:
+      then:
+        - if:
+            condition:
+              - switch.is_on: night
+            then:
+              - climate.control:
+                  id: ${friendly_name_short}
+                  mode: "OFF"
+  - platform: template
+    id: day_on
+    type: time
+    web_server:
+      sorting_group_id: sorting_group_climate_control
+    name: "Day ON"
+    icon: "mdi:clock-check"
+    optimistic: true
+    initial_value: "12:00:00"
+    restore_value: true
+    on_time:
+      then:
+        - if:
+            condition:
+              - switch.is_on: day
+            then:
+              - lambda: |-
+                  auto call = id(${friendly_name_short}).make_call();
+                  if (id(climate_mode).state == "COOL") {
+                      call.set_mode("COOL");
+                      call.perform();
+                  }
+                  else if (id(climate_mode).state == "HEAT") {
+                      call.set_mode("HEAT");
+                      call.perform();
+                  }
+                  else if (id(climate_mode).state == "DRY") {
+                      call.set_mode("DRY");
+                      call.perform();
+                  }
+
+  - platform: template
+    id: day_off
+    type: time
+    web_server:
+      sorting_group_id: sorting_group_climate_control
+    name: "Day OFF"
+    icon: "mdi:clock-check-outline"
+    optimistic: true
+    initial_value: "19:00:00"
+    restore_value: true
+    on_time:
+      then:
+        - if:
+            condition:
+              - switch.is_on: day
+            then:
+              - climate.control:
+                  id: ${friendly_name_short}
+                  mode: 'OFF'
+switch:
+  - platform: template
+    name: 'Night'
+    optimistic: true
+    id: night
+    icon: "mdi:weather-night"
+    restore_mode: RESTORE_DEFAULT_ON
+    web_server:
+      sorting_group_id: sorting_group_climate_control
+  - platform: template
+    name: 'Day'
+    optimistic: true
+    id: day
+    icon: "mdi:sun-clock"
+    restore_mode: RESTORE_DEFAULT_ON
+    web_server:
+      sorting_group_id: sorting_group_climate_control
+
+select:
+  - platform: template
+    name: "Climate Mode"
+    id: climate_mode
+    icon: "mdi:sun-snowflake"
+    web_server:
+      sorting_group_id: sorting_group_climate_control
+    options:
+     - "COOL"
+     - "HEAT"
+     - "DRY"
+    initial_option: "COOL"
+    restore_value: true
+    optimistic: true
