@@ -1,0 +1,48 @@
+#@krym_parus © from video https://youtu.be/jUl8mheMjvM
+addressable_lambda:
+  name: "Moving Area"
+  update_interval: 20ms
+  lambda: |-
+    static int center = 0; 
+    int target = id(led_count);  // данные из glogals (расстояние)
+    const int tail_length = 60;
+
+    if (center < target) {
+      center++;
+    } else if (center > target) {
+      center--;
+    }
+    it.all() = ESPColor(0, 0, 0);
+    int start = center - tail_length / 2;
+    int end = start + tail_length;
+    if (start < 0) {
+      start = 0;
+      end = tail_length;
+    }
+    if (end > it.size()) {
+      end = it.size();
+      start = end - tail_length;
+      if (start < 0) start = 0;
+    }
+    for (int i = start; i < end; i++) {
+      it[i] = current_color;
+    }
+
+ addressable_lambda:
+  name: "Wipe In Dynamic"
+  update_interval: 20ms
+  lambda: |-
+    static int length = 0;
+    int target = id(led_count); // данные из glogals (расстояние)
+
+    if (length < target) {
+      length++;
+    } else if (length > target) {
+      length--;
+    }
+
+    it.all() = ESPColor(0, 0, 0);
+
+    for (int i = 0; i < length && i < it.size(); i++) {
+      it[i] = current_color;
+    }
