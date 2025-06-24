@@ -46,3 +46,26 @@ addressable_lambda:
     for (int i = 0; i < length && i < it.size(); i++) {
       it[i] = current_color;
     }
+ # Код с датчика. У вас может быть и другой, который пишет значения в globals
+ sensor:
+  - platform: ld2420
+    moving_distance:
+      name : Moving Distance
+      id: moving_distance
+      on_value:
+        then:
+          - if:
+              condition:
+                  - lambda: |-
+                      auto s = id(effect).state;
+                      return s == "Moving Fixed Area" || s == "Moving Area" || s == "Wipe In Dynamic" || s == "Moving Fixed Area + Random Twinkle";
+              then:
+                - lambda: |-
+                    // 'x' — это параметр on_value, значение расстояния
+                    float dist = x;
+                    const int max_leds = atoi("${neopixel_num_leds}"); // 'neopixel_num_leds' — это общее количество диодов в ленте из substition
+                    float max_dist = id(max_distance).state;
+                    if (dist > max_dist) dist = max_dist;
+                    int count = (int)((dist / max_dist) * max_leds);
+                    if (count > max_leds) count = max_leds;
+                    id(led_count) = count; // запись значения вычисленного расстояния в globals для эффекта
